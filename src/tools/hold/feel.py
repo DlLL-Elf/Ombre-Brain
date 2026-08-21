@@ -53,6 +53,8 @@ async def store_feel(
     media: list | None = None,
     source_refs: list[dict] | None = None,
     quotes: list[dict] | None = None,
+    event_time: str = "",
+    references: list[str] | None = None,
 ) -> str:
     feel_valence = valence if 0 <= valence <= 1 else 0.5
     feel_arousal = arousal if 0 <= arousal <= 1 else 0.3
@@ -68,6 +70,8 @@ async def store_feel(
         title=title,
         source_refs=source_refs,
         quotes=quotes,
+        event_time=event_time,
+        references=references,
         bucket_type="feel",
         why_remembered=why_remembered,
         triggered_by=source_bucket.strip() if source_bucket else "",

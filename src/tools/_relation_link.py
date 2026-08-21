@@ -22,6 +22,8 @@ from datetime import datetime
 from ombrebrain.storage.relation_store import (
     AUTO_MAX_LINKS_PER_BUCKET,
     AUTO_RELATED_MIN_SCORE,
+    MAX_RELATION_LINKS,
+    collect_missing_reference_reverse,
     infer_auto_relation_type,
     merge_auto_links,
     normalize_relation_links,
@@ -185,5 +187,67 @@ async def link_new_bucket(bucket_id: str, content: str) -> int:
     if built:
         rt.logger.info(
             f"auto relations built / 自动建立关系: {bucket_id} -> {built} 条"
+        )
+    return built
+
+
+async def backfill_reference_reverse_links(all_buckets: list[dict]) -> int:
+    """补齐 references 的反向边 referenced_by（幂等）。
+
+    在 dream 全量扫描时调用（fire-and-forget 或 await 都行）。任何异常只记日志，
+    绝不影响记忆本身；反边是补强的 hint，不是正文。
+    """
+    try:
+        missing = collect_missing_reference_reverse(all_buckets)
+    except Exception as exc:  # noqa: BLE001
+        rt.logger.warning(
+            f"reference reverse scan failed / 引用反边扫描失败: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return 0
+
+    built = 0
+    for target_id, source_id in missing:
+        def _mutation(post, _source_id=source_id):
+            try:
+                links = normalize_relation_links(post.metadata.get("relation_links"))
+            except ValueError:
+                # 存量坏数据不在这里悄悄修，也不拖累补齐。
+                return False, 0
+            if any(
+                l.get("type") == "referenced_by"
+                and l.get("target_bucket_id") == _source_id
+                for l in links
+            ):
+                return False, 0
+            if len(links) >= MAX_RELATION_LINKS:
+                return False, 0
+            links.append(
+                {
+                    "target_bucket_id": _source_id,
+                    "type": "referenced_by",
+                    "label": "",
+                    "status": "active",
+                }
+            )
+            try:
+                post["relation_links"] = normalize_relation_links(links)
+            except ValueError:
+                return False, 0
+            return True, 1
+
+        try:
+            result = await rt.bucket_mgr.mutate_relation_links(target_id, _mutation)
+        except Exception as exc:  # noqa: BLE001
+            rt.logger.warning(
+                f"reference reverse write failed / 引用反边写入失败 "
+                f"{target_id}<-{source_id}: {type(exc).__name__}: {exc}"
+            )
+            continue
+        built += int(result or 0)
+
+    if built:
+        rt.logger.info(
+            f"reference reverse backfill / 补齐引用反边: {built} 条"
         )
     return built
