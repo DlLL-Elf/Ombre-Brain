@@ -251,3 +251,36 @@ async def backfill_reference_reverse_links(all_buckets: list[dict]) -> int:
             f"reference reverse backfill / 补齐引用反边: {built} 条"
         )
     return built
+
+
+async def backfill_auto_relations(all_buckets: list[dict]) -> dict[str, int]:
+    """给存量桶全量回填自动边（same_event / continuation_of / related_to），幂等。
+
+    自动建边（link_new_bucket）只在「新桶写入那一刻」增量触发，从不为存量老桶
+    回填——所以 8 月 10 日那批回溯写入的老桶彼此之间一直没有 ≈ 同刻 / ↔ 相关。
+    这个函数补上这一环：对每个非空活跃桶走一遍 link_new_bucket，边经
+    merge_auto_links 去重，重复跑不重复建、也不覆盖手动边（source=manual 原样保留）。
+
+    依赖 embedding 引擎（向量相似度）；未启用时直接返回，不报错。
+    供 tools/backfill_relations.py 调用，一次性重建历史关系。
+    """
+    engine = getattr(rt, "embedding_engine", None)
+    if not engine or not getattr(engine, "enabled", False):
+        return {"scanned": 0, "built": 0, "engine_disabled": 1}
+
+    scanned = 0
+    built = 0
+    for b in all_buckets or []:
+        meta = b.get("metadata") or {}
+        content = str(b.get("content") or "").strip()
+        if not content or not _eligible(meta):
+            continue
+        scanned += 1
+        try:
+            built += await link_new_bucket(b["id"], content)
+        except Exception as exc:  # noqa: BLE001 - 回填不该因单桶失败而中断
+            rt.logger.warning(
+                f"auto relation backfill failed / 自动关系回填失败 "
+                f"{b['id']}: {type(exc).__name__}: {exc}"
+            )
+    return {"scanned": scanned, "built": built, "engine_disabled": 0}

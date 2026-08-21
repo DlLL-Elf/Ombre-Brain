@@ -870,7 +870,7 @@ async def trace(
     digested=1 标记已消化并从默认/被动浮现及 dream 隐藏（对 pinned/permanent/anchor 桶不生效——核心准则与坐标系始终在场，要让某条安静请改用 trace(bucket_id, pinned=0)），
     但仍可通过显式 query、importance 审计或目录找回。content 会完整替换正文；
     old_str/new_str 会在完整原文中做唯一、逐字的局部替换（new_str 可为空以删除），
-    两种方式都会重建 embedding，且不能同时使用。status/weight 用于 plan；dont_surface 控制日常浮现；event_time 可事后修正一条记忆的语义时间（事情「什么时候发生」）：传 ISO/YYYY-MM-DD 覆盖并标 manual 来源，传 \clear 清除、回到「记录时间即事件时间」，空串不改；why_remembered、meaning_append/replace、media_append/replace 更新相应元数据。
+    两种方式都会重建 embedding，且不能同时使用。status/weight 用于 plan；dont_surface 控制日常浮现；event_time 可事后修正一条记忆的语义时间（事情「什么时候发生」）：传 ISO/YYYY-MM-DD 覆盖并标 manual 来源，传 \\clear 清除、回到「记录时间即事件时间」，空串不改；why_remembered、meaning_append/replace、media_append/replace 更新相应元数据。
 
     删除边界：delete=True 只会把 Markdown 移入 archive 并标记 deleted_at，不会
     物理抹除。hard_delete=True 仅用于清理创建时明确标记 test_data=True 的测试桶，
