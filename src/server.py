@@ -8,8 +8,8 @@ DecayEngine / EmbeddingEngine / ImportEngine，把它们注入 tools._runtime �
 web._shared，然后以 @mcp.tool() 注册薄封装（真正的实现在 src/tools/<工具>/ 下面）。
 
 关键行为：
-- 启动后暴露 18 个 MCP 工具：breath/breath_search/breath_advanced/hold/grow/
-  trace/anchor/release/pulse/plan/recall/thread/letter_write/
+- 启动后暴露 20 个 MCP 工具：breath/breath_search/breath_advanced/hold/grow/
+  trace/anchor/release/pulse/plan/recall/thread/link/unlink/letter_write/
   letter_lock_update/letter_read/dream/feel/I；每个入口
   ≤ 10 行，只负责转发。breath 拆成 breath()(0 参数)+breath_search(3 参数)+
   breath_advanced(9 参数) 三级，是因为 claude.ai 按需加载工具时会跳过参数
@@ -24,7 +24,7 @@ web._shared，然后以 @mcp.tool() 注册薄封装（真正的实现在 src/too
 - 不写 HTTP 路由处理（全在 web/* 下）；不写 LLM prompt（dehydrator 负责）
 - 不直接读写桶文件（bucket_manager 负责）
 
-对外暴露：mcp 单实例 + 18 个 @mcp.tool() 函数；HTTP 路由在 src/web/*
+对外暴露：mcp 单实例 + 20 个 @mcp.tool() 函数；HTTP 路由在 src/web/*
 ========================================
 """
 
@@ -984,6 +984,31 @@ async def link(
             label=label,
         ),
         op="link",
+        args={
+            "bucket_id": bucket_id,
+            "target_bucket_id": target_bucket_id,
+            "relation_type": relation_type,
+            "label": label,
+        },
+    )
+
+
+@mcp.tool()
+async def unlink(
+    bucket_id: str,
+    target_bucket_id: str,
+    relation_type: Optional[str] = "references",
+    label: Optional[str] = "",
+) -> str:
+    """断线：撤销一条手动补的边（连错了就软删掉）。给两条记忆的 bucket_id 和当时连的 relation_type。软删——status 置 detached，不是物理抹除，符合「记忆只能淡去、不能抹去」；断掉的边从路口消失，但历史还在、删过再 link 会重新激活。只断手动补的线（source=manual），系统自动建的边删了下次回填又会长回来，所以拒绝断。双向同步断，不留半条线。"""
+    return await _with_notice(
+        _t_link.unlink(
+            bucket_id=bucket_id,
+            target_bucket_id=target_bucket_id,
+            relation_type=relation_type,
+            label=label,
+        ),
+        op="unlink",
         args={
             "bucket_id": bucket_id,
             "target_bucket_id": target_bucket_id,

@@ -12,7 +12,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import tools._runtime as rt
-from tools.link import link
+from tools.link import link, unlink
+from ombrebrain.storage.relation_store import normalize_relation_links
 
 
 @pytest.fixture
@@ -110,3 +111,85 @@ async def test_link_does_not_bump_last_active(link_runtime):
     await link(a, b, "references")
     after = (await manager.get(a))["metadata"].get("last_active")
     assert before == after
+
+
+# ---------- unlink（3.8.0） ----------
+
+@pytest.mark.asyncio
+async def test_unlink_soft_detaches_both_sides(link_runtime):
+    manager = link_runtime
+    a = await _mk(manager, "甲")
+    b = await _mk(manager, "乙")
+    await link(a, b, "references")
+    out = await unlink(a, b, "references")
+    assert "已断线" in out
+
+    alinks = (await manager.get(a))["metadata"]["relation_links"]
+    blinks = (await manager.get(b))["metadata"]["relation_links"]
+    fwd = [l for l in alinks if l["type"] == "references" and l["target_bucket_id"] == b]
+    rev = [l for l in blinks if l["type"] == "referenced_by" and l["target_bucket_id"] == a]
+    # 软删：边还在，但 status 变 detached
+    assert len(fwd) == 1 and fwd[0]["status"] == "detached"
+    assert len(rev) == 1 and rev[0]["status"] == "detached"
+
+
+@pytest.mark.asyncio
+async def test_unlink_reports_missing(link_runtime):
+    manager = link_runtime
+    a = await _mk(manager, "甲")
+    b = await _mk(manager, "乙")
+    out = await unlink(a, b, "references")
+    assert "不存在" in out
+
+
+@pytest.mark.asyncio
+async def test_unlink_rejects_auto_edge(link_runtime):
+    manager = link_runtime
+    a = await _mk(manager, "甲")
+    b = await _mk(manager, "乙")
+
+    def _force_auto(post):
+        links = normalize_relation_links(post.metadata.get("relation_links"))
+        links.append(
+            {
+                "target_bucket_id": b,
+                "type": "references",
+                "label": "",
+                "status": "active",
+                "auto": True,
+                "score": 0.9,
+            }
+        )
+        post["relation_links"] = normalize_relation_links(links)
+        return True, None
+
+    await manager.mutate_relation_links(a, _force_auto)
+    out = await unlink(a, b, "references")
+    assert "自动建立" in out
+
+
+@pytest.mark.asyncio
+async def test_unlink_then_relink_reactivates(link_runtime):
+    manager = link_runtime
+    a = await _mk(manager, "甲")
+    b = await _mk(manager, "乙")
+    await link(a, b, "references")
+    await unlink(a, b, "references")
+    out = await link(a, b, "references")
+    assert "已补线" in out  # 重新激活，不报「已经在了」也不算新增
+
+    alinks = (await manager.get(a))["metadata"]["relation_links"]
+    fwd = [l for l in alinks if l["type"] == "references" and l["target_bucket_id"] == b]
+    # 只有一条（重新激活，不是新增重复）
+    assert len(fwd) == 1
+    assert fwd[0]["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_unlink_rejects_bad_input(link_runtime):
+    manager = link_runtime
+    a = await _mk(manager, "甲")
+    b = await _mk(manager, "乙")
+    assert "自己身上" in await unlink(a, a)
+    assert "只支持" in await unlink(a, b, "caused_by")
+    assert "未找到" in await unlink("nonexistent", b)
