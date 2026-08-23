@@ -23,7 +23,7 @@ import asyncio
 
 from ..i import record_dream_pass
 from .. import _runtime as rt
-from .._relation_link import backfill_reference_reverse_links
+from .._relation_link import backfill_reference_reverse_links, backfill_feel_links
 from .candidates import collect_candidates
 from .hints import build_connection_hint, build_crystal_hint, collect_self_candidates
 from .output import format_dream_output
@@ -48,6 +48,13 @@ async def dispatch(
         asyncio.create_task(backfill_reference_reverse_links(all_buckets))
     except Exception as exc:
         rt.logger.warning(f"Dream reference reverse backfill schedule failed: {exc}")
+    # feel 回填（幂等，fire-and-forget）：老 feel 的 triggered_by 有值但 references
+    # 边没有（旧版不落关系边）。挂着自愈——正常情况白扫一遍、几乎无感，若将来某条
+    # feel 又缺了边，做梦时静默补上，不用人记得手动跑一次。
+    try:
+        asyncio.create_task(backfill_feel_links(all_buckets))
+    except Exception as exc:
+        rt.logger.warning(f"Dream feel link backfill schedule failed: {exc}")
     recent = collect_candidates(all_buckets, window_hours)
     try:
         self_review = await collect_self_candidates(all_buckets, window_hours)
