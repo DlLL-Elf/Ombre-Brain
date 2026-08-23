@@ -284,3 +284,144 @@ async def backfill_auto_relations(all_buckets: list[dict]) -> dict[str, int]:
                 f"{b['id']}: {type(exc).__name__}: {exc}"
             )
     return {"scanned": scanned, "built": built, "engine_disabled": 0}
+
+
+def collect_missing_feel_links(all_buckets: list[dict]) -> list[tuple[str, str]]:
+    """扫描 feel 桶的 triggered_by，找出缺 references 边的 (feel_id, source_id)。
+
+    旧版 feel 写入时 source_bucket 只存 triggered_by 字段、不落关系边。3.9.0 起
+    新写的 feel 会落 references 边，但存量老 feel 仍是两头断。这里纯判定：只找
+    「triggered_by 有值、且 feel 身上没有 references 边指向它」的 (feel, source)。
+    不写盘，便于单独测试。
+    """
+    if not all_buckets:
+        return []
+
+    by_id: dict[str, dict] = {}
+    for b in all_buckets:
+        bid = str((b or {}).get("id") or "").strip()
+        if not bid:
+            continue
+        by_id[bid] = b
+
+    missing: set[tuple[str, str]] = set()
+    for b in all_buckets:
+        meta = b.get("metadata") or {}
+        if _bucket_type(meta) != "feel":
+            continue
+        feel_id = str(b.get("id") or "").strip()
+        source_id = str(meta.get("triggered_by") or "").strip()
+        if not feel_id or not source_id or source_id == feel_id:
+            continue
+        if source_id not in by_id:
+            continue
+        try:
+            links = normalize_relation_links(meta.get("relation_links"))
+        except ValueError:
+            links = []
+        has_ref = any(
+            l.get("type") == "references"
+            and l.get("target_bucket_id") == source_id
+            and l.get("status") == "active"
+            for l in links
+        )
+        if not has_ref:
+            missing.add((feel_id, source_id))
+    return sorted(missing)
+
+
+async def backfill_feel_links(all_buckets: list[dict]) -> int:
+    """给存量 feel 桶回填 references 边 + referenced_by 反边（幂等）。
+
+    老 feel 的 triggered_by 有值但 references 边没有（旧版不落关系边）。扫一遍，
+    把 triggered_by 落成：
+      feel --references--> 源事件
+      源事件 --referenced_by--> feel（反边）
+    供 tools/backfill_feel_links.py 调用，一次性重建。任何异常只记日志，不影响记忆。
+    """
+    try:
+        missing = collect_missing_feel_links(all_buckets)
+    except Exception as exc:  # noqa: BLE001
+        rt.logger.warning(
+            f"feel link scan failed / 感受回填扫描失败: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return 0
+
+    built = 0
+    for feel_id, source_id in missing:
+        def _feel_side(post, _source_id=source_id):
+            try:
+                links = normalize_relation_links(post.metadata.get("relation_links"))
+            except ValueError:
+                return False, 0
+            if any(
+                l.get("type") == "references"
+                and l.get("target_bucket_id") == _source_id
+                for l in links
+            ):
+                return False, 0
+            if len(links) >= MAX_RELATION_LINKS:
+                return False, 0
+            links.append(
+                {
+                    "target_bucket_id": _source_id,
+                    "type": "references",
+                    "label": "",
+                    "status": "active",
+                }
+            )
+            try:
+                post["relation_links"] = normalize_relation_links(links)
+            except ValueError:
+                return False, 0
+            return True, 1
+
+        def _source_side(post, _feel_id=feel_id):
+            try:
+                links = normalize_relation_links(post.metadata.get("relation_links"))
+            except ValueError:
+                return False, 0
+            if any(
+                l.get("type") == "referenced_by"
+                and l.get("target_bucket_id") == _feel_id
+                for l in links
+            ):
+                return False, 0
+            if len(links) >= MAX_RELATION_LINKS:
+                return False, 0
+            links.append(
+                {
+                    "target_bucket_id": _feel_id,
+                    "type": "referenced_by",
+                    "label": "",
+                    "status": "active",
+                }
+            )
+            try:
+                post["relation_links"] = normalize_relation_links(links)
+            except ValueError:
+                return False, 0
+            return True, 1
+
+        try:
+            left = await rt.bucket_mgr.mutate_relation_links(feel_id, _feel_side)
+        except Exception as exc:  # noqa: BLE001
+            rt.logger.warning(
+                f"feel link write failed / 感受回填写入失败 "
+                f"{feel_id}->{source_id}: {type(exc).__name__}: {exc}"
+            )
+            continue
+        try:
+            right = await rt.bucket_mgr.mutate_relation_links(source_id, _source_side)
+        except Exception as exc:  # noqa: BLE001
+            rt.logger.warning(
+                f"feel reverse link write failed / 感受回填反边失败 "
+                f"{source_id}<-{feel_id}: {type(exc).__name__}: {exc}"
+            )
+            continue
+        built += int(left or 0) + int(right or 0)
+
+    if built:
+        rt.logger.info(f"feel links backfill / 感受回填: {built} 条")
+    return built
