@@ -241,9 +241,16 @@ def relation_display_label(relation_type: str, label: str | None = "") -> str:
 # ============================================================
 
 # 这些类型各自成层，不参与关系网的展示（作为桶自身或邻居都跳过）。
+# feel 也在其中——但 feel 是「定向参与」：它只牵着它来自的事件（references）和
+# 被事件顺出（referenced_by），其余边类型对 feel 无意义。所以 feel 的排除不是
+# 完全排除，而是在渲染层靠 FEEL_ONLY_RELATION_TYPES 做定向过滤（见 relation_hint /
+# render_junction）。plan/letter/i 才是完全排除。
 EXCLUDED_RELATION_TYPES = frozenset({
     "plan", "feel", "letter", "i", "i_candidate", "identity",
 })
+
+# feel 定向参与的边类型：感受只走这两条，不横向连、不参与时间边。
+FEEL_ONLY_RELATION_TYPES = frozenset({"references", "referenced_by"})
 
 # 路口分组的展示顺序：时间方向在前，相关/自定义殿后——
 # 让「沿着时间往回走」的顺序自然：因为 → 之前 → 同刻 → 之后 → 所以 → 相关 → 引用。
@@ -304,8 +311,10 @@ def relation_hint(bucket: dict, limit: int = 2) -> str:
     想读全文就用 recall(id) 点进去。
     """
     meta = bucket.get("metadata") or {}
-    if bucket_type(meta) in EXCLUDED_RELATION_TYPES:
+    btype = bucket_type(meta)
+    if btype in EXCLUDED_RELATION_TYPES and btype != "feel":
         return ""
+    feel_only = btype == "feel"
     try:
         links = normalize_relation_links(meta.get("relation_links"))
     except ValueError:
@@ -318,6 +327,8 @@ def relation_hint(bucket: dict, limit: int = 2) -> str:
         if not target_id:
             continue
         rel_type = link.get("type") or ""
+        if feel_only and rel_type not in FEEL_ONLY_RELATION_TYPES:
+            continue
         if rel_type == "custom":
             custom_ids.append(target_id)
             continue
@@ -358,8 +369,10 @@ async def render_junction(
         return relation_hint(bucket, limit=limit_per_direction)
 
     meta = bucket.get("metadata") or {}
-    if bucket_type(meta) in EXCLUDED_RELATION_TYPES:
+    btype = bucket_type(meta)
+    if btype in EXCLUDED_RELATION_TYPES and btype != "feel":
         return ""
+    feel_only = btype == "feel"
     try:
         links = normalize_relation_links(meta.get("relation_links"))
     except ValueError:
@@ -371,6 +384,8 @@ async def render_junction(
     custom_rows: list[str] = []
     for link in active:
         rel_type = link.get("type") or ""
+        if feel_only and rel_type not in FEEL_ONLY_RELATION_TYPES:
+            continue
         target_id = str(link.get("target_bucket_id") or "").strip()
         if not target_id or target_id == bucket_id:
             continue
@@ -378,7 +393,11 @@ async def render_junction(
         if not neighbor:
             continue
         nmeta = neighbor.get("metadata") or {}
-        if bucket_type(nmeta) in EXCLUDED_RELATION_TYPES:
+        nbtype = bucket_type(nmeta)
+        if nbtype in EXCLUDED_RELATION_TYPES and nbtype != "feel":
+            continue
+        # feel 邻居只通过 references/referenced_by 定向边显示（感受跟着事件浮现）
+        if nbtype == "feel" and rel_type not in FEEL_ONLY_RELATION_TYPES:
             continue
         ntitle = bucket_title(neighbor)
         ndate = bucket_date(nmeta)

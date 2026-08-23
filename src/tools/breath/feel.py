@@ -94,9 +94,11 @@ async def surface_feels(query: str = "", max_tokens: int = 0) -> str:
 
         feel_ids = {str(b.get("id") or "") for b in feels}
         scores, notice = await _semantic_hits(query, feel_ids)
-        if not scores:
-            literal = _literal_hits(query, feels)
-            scores = {bucket_id: 0.0 for bucket_id in literal}
+        # 字面命中始终合并：字面命中的感受一定返回，不被不相关的向量命中挤掉。
+        # 字面兜底给 0.0，排序时排在语义命中（>=0.65）之后，作为补充而非替代。
+        literal = _literal_hits(query, feels)
+        for bucket_id in literal:
+            scores.setdefault(bucket_id, 0.0)
 
         if not scores:
             head = f"没有和「{query}」相关的 feel。"

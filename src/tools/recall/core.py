@@ -51,7 +51,7 @@ async def recall(bucket_id: str) -> str:
         return f"我找不到 {bucket_id} 这条记忆——它可能还没被写下，或已经归档。"
     meta = bucket.get("metadata") or {}
     btype = bucket_type(meta)
-    if btype in EXCLUDED_RELATION_TYPES:
+    if btype in EXCLUDED_RELATION_TYPES and btype != "feel":
         return (
             f"{bucket_id} 是 {btype} 类桶，不参与记忆的关系网——"
             f"它们各自成层，横向连起来只是噪音。"
