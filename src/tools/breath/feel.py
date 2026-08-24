@@ -94,11 +94,13 @@ async def surface_feels(query: str = "", max_tokens: int = 0) -> str:
 
         feel_ids = {str(b.get("id") or "") for b in feels}
         scores, notice = await _semantic_hits(query, feel_ids)
-        # 字面命中始终合并：字面命中的感受一定返回，不被不相关的向量命中挤掉。
-        # 字面兜底给 0.0，排序时排在语义命中（>=0.65）之后，作为补充而非替代。
-        literal = _literal_hits(query, feels)
-        for bucket_id in literal:
-            scores.setdefault(bucket_id, 0.0)
+        # 字面命中只在向量一条都没命中时才兜底，不做无条件并集。
+        # 理由：感受之间的连接是「共振」不是「匹配」——模糊检索允许两段字面毫无关系的
+        # 记忆靠同一情感频谱接住彼此，那才是惊喜感；字面并集会消灭「没想到」。
+        # 「确定找回某条感受」交给关系网（feel --references--> 源事件），检索放手回到模糊。
+        if not scores:
+            literal = _literal_hits(query, feels)
+            scores = {bucket_id: 0.0 for bucket_id in literal}
 
         if not scores:
             head = f"没有和「{query}」相关的 feel。"

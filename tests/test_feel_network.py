@@ -3,7 +3,7 @@
 - store_feel 带 source_bucket：落 references 边（feel → 源事件）+ 即时补 referenced_by 反边。
 - feel 桶 recall：只显示 references 定向边，不显示其他边（不横向乱连）。
 - 源事件 recall：通过 referenced_by 顺出当时的感受。
-- feel 检索：字面命中与语义命中取并集，字面命中不被向量挤掉。
+- feel 检索：语义优先（>=0.65），字面只在无语义命中时兜底（改回原版，模糊优先）。
 """
 
 from unittest.mock import MagicMock
@@ -139,14 +139,33 @@ class ListMgr:
         return None
 
 
+class FakeEmbedNone:
+    enabled = True
+
+    async def search_similar(self, query, top_k=10, allowed_bucket_ids=None):
+        # 语义无命中：字面兜底应生效
+        return []
+
+
 @pytest.mark.asyncio
-async def test_feel_search_merges_literal_and_semantic():
-    """字面命中不被不相关的向量命中挤掉。"""
+async def test_feel_search_semantic_suppresses_literal():
+    """语义有命中时，字面不兜底——感受靠共振连接，不被精确匹配挤掉惊喜感。"""
     feels = [
         {"id": "a_id", "content": "下雨天的感受", "metadata": {"type": "feel", "created": "2025-01-01T00:00:00"}},
         {"id": "b_id", "content": "今天好累", "metadata": {"type": "feel", "created": "2025-01-02T00:00:00"}},
     ]
     rt.init(bucket_mgr=ListMgr(feels), embedding_engine=FakeEmbed(), logger=MagicMock(), mark_op=None)
     out = await surface_feels(query="下雨", max_tokens=10000)
-    assert "a_id" in out  # 字面命中（"下雨"在 a_id 正文里）
-    assert "b_id" in out  # 语义命中（embedding 返回 b_id）
+    assert "b_id" in out  # 语义命中（embedding 返回 b_id，0.8 >= 0.65）
+    assert "a_id" not in out  # 字面命中的「下雨」不并进来——模糊优先
+
+
+@pytest.mark.asyncio
+async def test_feel_search_literal_fallback_when_no_semantic():
+    """向量无命中时，字面兜底仍生效——确定找回的路没断。"""
+    feels = [
+        {"id": "a_id", "content": "下雨天的感受", "metadata": {"type": "feel", "created": "2025-01-01T00:00:00"}},
+    ]
+    rt.init(bucket_mgr=ListMgr(feels), embedding_engine=FakeEmbedNone(), logger=MagicMock(), mark_op=None)
+    out = await surface_feels(query="下雨", max_tokens=10000)
+    assert "a_id" in out  # 语义空 → 字面兜底接住
