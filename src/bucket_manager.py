@@ -2580,6 +2580,32 @@ class BucketManager:
 
         # --- Update only fields that were passed in / 只改传入的字段 ---
         if "content" in kwargs:
+            # === 原文保护 ===
+            # 整体替换正文前，先把旧正文写进不可变原文证据层（_sources/），
+            # 并挂一条 source_links 到桶上——「记忆只能淡去、不能抹去」，
+            # 原文被覆盖也必须留痕，不静默消失。保护失败只记 warning，不阻断编辑。
+            # 作者更新后：此块是纯插入，merge 冲突时整块认出即可，重接照抄。
+            _old_content = str(post.content or "")
+            if _old_content.strip() and _old_content != kwargs["content"]:
+                try:
+                    from ombrebrain.storage.source_store import (
+                        SourceStore,
+                        append_source_links,
+                        active_source_refs_from_links,
+                    )
+                    _store = SourceStore(self.base_dir)
+                    _ref = _store.put(_old_content)
+                    _line_count = len(_old_content.splitlines()) or 1
+                    _links = append_source_links(
+                        post.metadata, [{"ref": _ref, "ranges": [[1, _line_count]]}]
+                    )
+                    post["source_links"] = _links
+                    post["source_refs"] = active_source_refs_from_links(_links)
+                except Exception as _exc:
+                    logger.warning(
+                        f"content 覆盖前的原文保护失败（不影响本次编辑）: "
+                        f"{type(_exc).__name__}: {_exc}"
+                    )
             post.content = kwargs["content"]  # wikilink injection disabled; LLM adds [[]] via prompt
         if "tags" in kwargs:
             post["tags"] = kwargs["tags"]
