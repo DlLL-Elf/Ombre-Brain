@@ -168,6 +168,47 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
             str(bucket.get("id") or ""), bucket.get("metadata", {})
         )
 
+    # --- 自我认知（I）：河床，先于核心准则注入，取最近 3 条正式条目，逐字完整。 ---
+    # I 桶 dont_surface=True（本不参与普通浮现），故这里不走 _can_surface 过滤，
+    # 与 breath-hook 一致地直接取；排除 letter 与 protected。
+    token_budget = max_tokens  # I 段与核心准则共用预算，先于两者定义
+
+    self_buckets = [
+        b for b in all_buckets
+        if not is_letter_bucket(b)
+        and not parse_bool(b["metadata"].get("protected"), default=False)
+        and (
+            b["metadata"].get("type") == "i"
+            or "__i__" in (b["metadata"].get("tags") or [])
+        )
+    ]
+    self_buckets.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+    self_results: list[str] = []
+    self_omitted = 0
+    for b in self_buckets[:3]:
+        try:
+            aspect = next(
+                (
+                    str(t).replace("aspect:", "")
+                    for t in (b["metadata"].get("tags") or [])
+                    if isinstance(t, str) and t.startswith("aspect:")
+                ),
+                "",
+            )
+            header = (
+                f"🪞 [自我认知"
+                + (f" · {aspect}" if aspect else "")
+                + f"] [bucket_id:{b['id']}]"
+            )
+            rendered, entry_tokens = render_stored_bucket(b, header, "")
+            if entry_tokens > token_budget:
+                self_omitted += 1
+                continue
+            self_results.append(rendered)
+            token_budget -= entry_tokens
+        except Exception as e:
+            rt.logger.warning(f"Failed to render self bucket / 自我认知渲染失败: {e}")
+
     # --- pinned/permanent 桶置顶（protected 仅防衰减，不主动浮现）---
     # 排除 letter 桶：letter 的 importance=10 不代表核心准则。
     # pinned 与 anchor 在正常写入路径互斥：钉选会清除 anchor，设 anchor 会拒绝 pinned 桶。
@@ -187,7 +228,6 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
     if tag_filter and pinned_buckets:
         core_filter_notice = "[说明：tags 仅过滤普通浮现记忆；核心准则按设计始终注入。]"
     pinned_results = []
-    token_budget = max_tokens
     pinned_omitted = 0
     pinned_required_tokens = 0
     for b in pinned_buckets:
@@ -454,6 +494,8 @@ async def surface_default(max_results: int, max_tokens: int, tag_filter: list) -
     parts = []
     if core_filter_notice:
         parts.append(core_filter_notice)
+    if self_results:
+        parts.append("=== 自我认知 ===\n" + "\n---\n".join(self_results))
     if pinned_results:
         parts.append("=== 核心准则 ===\n" + "\n---\n".join(pinned_results))
     if dynamic_results:
